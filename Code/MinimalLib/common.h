@@ -23,6 +23,11 @@
 #include <GraphMol/FileParsers/PNGParser.h>
 #include <RDGeneral/FileParseException.h>
 #include <GraphMol/MolDraw2D/MolDraw2DSVG.h>
+#include <GraphMol/MolDraw2D/MolDraw2DUtils.h>
+#include <GraphMol/MolDraw2D/DrawMol.h>
+#include <GraphMol/MolDraw2D/DrawShape.h>
+#include <GraphMol/MolDraw2D/AtomSymbol.h>
+#include <GraphMol/MolDraw2D/StringRect.h>
 #include <GraphMol/Substruct/SubstructMatch.h>
 #include <GraphMol/MolInterchange/MolInterchange.h>
 #include <GraphMol/Descriptors/Property.h>
@@ -825,6 +830,266 @@ std::string mol_to_svg(const ROMol &m, int w = -1, int h = -1,
                        const std::string &details = "") {
   SVGDrawerFromDetails svgDrawer(w, h, details);
   return svgDrawer.draw_mol(m);
+}
+
+// Returns atom/bond positions and drawing styles (after layout, optional
+// alignment and wedging) as JSON, so a client (e.g. React) can render the SVG
+// itself while keeping full interactivity without recomputing positions.
+// The molecule is laid out exactly as mol_to_svg would, so pixel coordinates
+// match a get_svg_with_highlights call with the same details.
+// Pass "alignMolBlock" in the details JSON to orient the molecule like the
+// matching sub-part of a reference molecule (partial match accepted).
+std::string mol_to_geometry(ROMol &m, int w = -1, int h = -1,
+                            const std::string &details = "") {
+  MolDrawingDetails molDrawingDetails;
+  molDrawingDetails.width = w;
+  molDrawingDetails.height = h;
+  std::string alignMolBlock;
+  if (!details.empty()) {
+    auto problems = process_mol_details(details, molDrawingDetails);
+    if (!problems.empty()) {
+      return problems;
+    }
+    std::istringstream ss;
+    ss.str(details);
+    boost::property_tree::ptree pt;
+    boost::property_tree::read_json(ss, pt);
+    LPT_OPT_GET(alignMolBlock);
+  }
+
+  // Optional alignment: orient like the matching sub-part of the reference.
+  if (!alignMolBlock.empty()) {
+    std::unique_ptr<RWMol> templateMol;
+    try {
+      templateMol.reset(MolBlockToMol(alignMolBlock, false, false, false));
+    } catch (...) {
+    }
+    if (templateMol && templateMol->getNumConformers()) {
+      RDDepict::ConstrainedDepictionParams p;
+      p.acceptFailure = true;  // reactant may not fully match the product
+      p.allowRGroups = true;
+      try {
+        RDDepict::generateDepictionMatching2DStructure(m, *templateMol, -1,
+                                                       nullptr, p);
+      } catch (...) {
+      }
+    }
+  }
+
+  MolDraw2DSVG drawer(molDrawingDetails.width, molDrawingDetails.height,
+                      molDrawingDetails.panelWidth,
+                      molDrawingDetails.panelHeight,
+                      molDrawingDetails.noFreetype);
+  if (!details.empty()) {
+    MolDraw2DUtils::updateDrawerParamsFromJSON(drawer, details);
+  }
+  drawer.setOffset(molDrawingDetails.offsetx, molDrawingDetails.offsety);
+
+  // Draw into a throwaway buffer: this runs the full layout + wedging pipeline
+  // and sets up the drawing transform so getDrawCoords returns pixel positions.
+  MolDraw2DUtils::prepareAndDrawMolecule(
+      drawer, m, molDrawingDetails.legend, &molDrawingDetails.atomIds,
+      &molDrawingDetails.bondIds,
+      molDrawingDetails.atomMap.empty() ? nullptr : &molDrawingDetails.atomMap,
+      molDrawingDetails.bondMap.empty() ? nullptr : &molDrawingDetails.bondMap,
+      molDrawingDetails.radiiMap.empty() ? nullptr
+                                         : &molDrawingDetails.radiiMap,
+      -1, molDrawingDetails.kekulize, molDrawingDetails.addChiralHs,
+      molDrawingDetails.wedgeBonds, molDrawingDetails.forceCoords,
+      molDrawingDetails.wavyBonds);
+  drawer.finishDrawing();
+
+  // Walk the DrawMol primitives RDKit computed (in pixel/draw coordinates) so
+  // the client renders exactly what RDKit would: per-half-coloured bond lines,
+  // solid/dashed stereo wedges, and atom labels laid out character by character
+  // with sub/superscript sizing and orientation.
+  bj::object doc;
+
+  const auto *drawMol = drawer.getActiveDrawMol();
+
+  auto colourObj = [](const DrawColour &c) {
+    bj::object o;
+    o["r"] = c.r;
+    o["g"] = c.g;
+    o["b"] = c.b;
+    o["a"] = c.a;
+    return o;
+  };
+  auto pointObj = [](const RDGeom::Point2D &p) {
+    bj::object o;
+    o["x"] = p.x;
+    o["y"] = p.y;
+    return o;
+  };
+
+  // Bond primitives: lines (single segments), solid wedges (filled triangles),
+  // dashed wedges (a series of short lines), and wavy lines.
+  bj::array lines;
+  bj::array wedges;
+  if (drawMol) {
+    for (const auto &shape : drawMol->bonds_) {
+      const auto *sl =
+          dynamic_cast<const MolDraw2D_detail::DrawShapeSimpleLine *>(
+              shape.get());
+      if (sl) {
+        bj::object l;
+        l["p1"] = pointObj(sl->points_[0]);
+        l["p2"] = pointObj(sl->points_[1]);
+        l["colour"] = colourObj(sl->lineColour_);
+        l["width"] = 1.0;  // Fixed to 1px for thin lines
+        l["dashed"] = !sl->dashPattern_.empty();
+        lines.push_back(l);
+        continue;
+      }
+      const auto *sw =
+          dynamic_cast<const MolDraw2D_detail::DrawShapeSolidWedge *>(
+              shape.get());
+      if (sw) {
+        // points_ come in triangles (groups of 3); first triangle uses
+        // lineColour_, subsequent ones col2_.
+        for (size_t i = 0; i + 2 < sw->points_.size() + 1 &&
+                           i + 2 < sw->points_.size();
+             i += 3) {
+          bj::object wv;
+          bj::array pts;
+          pts.push_back(pointObj(sw->points_[i]));
+          pts.push_back(pointObj(sw->points_[i + 1]));
+          pts.push_back(pointObj(sw->points_[i + 2]));
+          wv["points"] = pts;
+          wv["filled"] = true;
+          wv["colour"] = colourObj(i == 0 ? sw->lineColour_ : sw->col2_);
+          wedges.push_back(wv);
+        }
+        continue;
+      }
+      const auto *dw =
+          dynamic_cast<const MolDraw2D_detail::DrawShapeDashedWedge *>(
+              shape.get());
+      if (dw) {
+        // Rendered as pairs of points, each its own short line.
+        for (size_t i = 0, j = 0; i + 1 < dw->points_.size(); i += 2, ++j) {
+          bj::object l;
+          l["p1"] = pointObj(dw->points_[i]);
+          l["p2"] = pointObj(dw->points_[i + 1]);
+          l["colour"] =
+              colourObj(j < dw->lineColours_.size() ? dw->lineColours_[j]
+                                                     : dw->lineColour_);
+          l["width"] = 1.0;  // Fixed to 1px for thin lines
+          l["dashed"] = false;
+          lines.push_back(l);
+        }
+        continue;
+      }
+      const auto *wl =
+          dynamic_cast<const MolDraw2D_detail::DrawShapeWavyLine *>(shape.get());
+      if (wl) {
+        bj::object l;
+        l["p1"] = pointObj(wl->points_[0]);
+        l["p2"] = pointObj(wl->points_[1]);
+        l["colour"] = colourObj(wl->lineColour_);
+        l["width"] = 1.0;  // Fixed to 1px for thin lines
+        l["wavy"] = true;
+        lines.push_back(l);
+        continue;
+      }
+      // Fall back to a polyline for any other shape with >=2 points.
+      if (shape->points_.size() >= 2) {
+        for (size_t i = 0; i + 1 < shape->points_.size(); ++i) {
+          bj::object l;
+          l["p1"] = pointObj(shape->points_[i]);
+          l["p2"] = pointObj(shape->points_[i + 1]);
+          l["colour"] = colourObj(shape->lineColour_);
+          l["width"] = 1.0;  // Fixed to 1px for thin lines
+          lines.push_back(l);
+        }
+      }
+    }
+  }
+  doc["lines"] = lines;
+  doc["wedges"] = wedges;
+
+  // Atom labels, laid out character by character. trans_ is relative to the
+  // atom centre cds_ (both in draw coords); height_ gives the glyph size so the
+  // client can size sub/superscripts the way RDKit did.
+  bj::array labels;
+  if (drawMol) {
+    for (const auto &lab : drawMol->atomLabels_) {
+      if (!lab || lab->drawChars_.empty()) {
+        continue;
+      }
+      bj::object lv;
+      lv["atomIdx"] = lab->atIdx_;
+      lv["orient"] = static_cast<int>(lab->orient_);
+      lv["colour"] = colourObj(lab->colour_);
+      bj::array chars;
+      for (size_t i = 0; i < lab->drawChars_.size(); ++i) {
+        const auto &rect = *lab->rects_[i];
+        bj::object cv;
+        cv["c"] = std::string(1, lab->drawChars_[i]);
+        // Absolute draw-coord position of this glyph's centre. Mirrors the
+        // centre derived from RDKit's DrawText::drawChars: the y axis uses the
+        // "opposite sign convention" (trans_.y is subtracted, not added), so a
+        // subscript sits H/2 below the atom centre rather than 1.5*H below.
+        cv["x"] = lab->cds_.x + rect.trans_.x;
+        cv["y"] =
+            lab->cds_.y - rect.trans_.y - rect.rect_corr_ - rect.y_shift_;
+        cv["width"] = rect.width_;
+        cv["height"] = rect.height_;
+        // 0 normal, 1 superscript, 2 subscript.
+        cv["mode"] = static_cast<int>(lab->drawModes_[i]);
+
+        // Font scale factor for this character (matching RDKit's selectScaleFactor)
+        double fontScale = 1.0;
+        if (lab->drawModes_[i] == MolDraw2D_detail::TextDrawType::TextDrawSubscript) {
+          fontScale = 0.66;
+        } else if (lab->drawModes_[i] == MolDraw2D_detail::TextDrawType::TextDrawSuperscript) {
+          // Charge symbols (+/-) also use 0.66, others use 0.66
+          fontScale = 0.66;
+        }
+        cv["fontScale"] = fontScale;
+
+        chars.push_back(cv);
+      }
+      lv["chars"] = chars;
+      labels.push_back(lv);
+    }
+  }
+  doc["labels"] = labels;
+
+  // Draw-coord (pixel) position of every atom, label or not (e.g. carbons have
+  // no label but can still be a reaction centre). Lets the client highlight any
+  // atom by index. getDrawCoords maps atom index -> the same pixel frame as the
+  // lines/labels above.
+  bj::array atomPts;
+  if (drawMol) {
+    for (unsigned int i = 0; i < m.getNumAtoms(); ++i) {
+      auto p = drawMol->getDrawCoords(static_cast<int>(i));
+      bj::object a;
+      a["idx"] = i;
+      a["x"] = p.x;
+      a["y"] = p.y;
+      atomPts.push_back(a);
+    }
+  }
+  doc["atoms"] = atomPts;
+
+  // Bonds as atom-index pairs, so the client can draw a ribbon along the kept
+  // (MCS) skeleton: connect highlighted atoms that share a bond.
+  bj::array bondPairs;
+  for (const auto bond : m.bonds()) {
+    bj::object b;
+    b["a1"] = bond->getBeginAtomIdx();
+    b["a2"] = bond->getEndAtomIdx();
+    bondPairs.push_back(b);
+  }
+  doc["bonds"] = bondPairs;
+
+  bj::object view;
+  view["width"] = drawer.width();
+  view["height"] = drawer.height();
+  doc["view"] = view;
+
+  return bj::serialize(doc);
 }
 
 std::string rxn_to_svg(const ChemicalReaction &rxn, int w = -1, int h = -1,

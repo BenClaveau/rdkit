@@ -9,6 +9,7 @@
 //  of the RDKit source tree.
 //
 #include <string>
+#include <set>
 #include "minilib.h"
 #include "common.h"
 
@@ -135,6 +136,14 @@ std::string JSMolBase::get_svg_with_highlights(
   int w = d_defaultWidth;
   int h = d_defaultHeight;
   return MinimalLib::mol_to_svg(get(), w, h, details);
+}
+std::string JSMolBase::get_2d_geometry(const std::string &details) const {
+  // mol_to_geometry prepares the molecule in place (kekulize, wedge), so it
+  // works on a copy to keep this method const and leave the molecule untouched.
+  RWMol molCopy(get());
+  int w = d_defaultWidth;
+  int h = d_defaultHeight;
+  return MinimalLib::mol_to_geometry(molCopy, w, h, details);
 }
 
 #ifdef RDK_BUILD_INCHI_SUPPORT
@@ -513,6 +522,141 @@ std::string JSMolBase::generate_aligned_coords(const JSMolBase &templateMol,
   }
   return MinimalLib::generate_aligned_coords(get(), templateMol.get(),
                                              details.c_str());
+}
+
+std::string JSMolBase::get_aligned_molblock(const JSMolBase &templateMol,
+                                            const std::string &details) {
+  // Orienting this molecule (e.g. a reactant) onto the template (e.g. the
+  // product) requires their common substructure as the reference: the template
+  // as a whole is generally NOT a substructure of this molecule. Mirror the
+  // python aligner: find the MCS, then use it as the alignment reference. This
+  // keeps the whole computation in a single wasm call.
+  std::string effectiveDetails = details;
+  std::string mcsSmarts;
+#ifdef RDK_BUILD_MINIMAL_LIB_MCS
+  {
+    // Parse caller details, then inject the MCS as referenceSmarts unless the
+    // caller already supplied one.
+    bj::object d;
+    if (!details.empty()) {
+      try {
+        auto parsed = bj::parse(details);
+        if (parsed.is_object()) {
+          d = parsed.as_object();
+        }
+      } catch (...) {
+      }
+    }
+    if (!d.contains("referenceSmarts")) {
+      std::vector<ROMOL_SPTR> mols;
+      mols.push_back(ROMOL_SPTR(new ROMol(get())));
+      mols.push_back(ROMOL_SPTR(new ROMol(templateMol.get())));
+      MCSParameters p;
+      p.BondCompareParameters.CompleteRingsOnly = true;
+      p.AtomCompareParameters.CompleteRingsOnly = true;
+      // Bound the search: findMCS is worst-case exponential and can run for
+      // 10+ seconds on some ring systems, blocking the (single) worker. On
+      // timeout RDKit returns the best MCS found so far (good enough to align).
+      p.Timeout = 1;  // seconds
+      auto mcs = RDKit::findMCS(mols, &p);
+      mcsSmarts = mcs.SmartsString;
+      if (!mcsSmarts.empty()) {
+        d["referenceSmarts"] = mcsSmarts;
+      }
+    } else {
+      mcsSmarts = std::string(d["referenceSmarts"].as_string().c_str());
+    }
+    effectiveDetails = bj::serialize(d);
+  }
+#endif
+
+  // generate_aligned_coords mutates this molecule's conformer in place and
+  // returns the matched atoms/bonds as JSON; we just attach the resulting molblock.
+  std::string matchJson = generate_aligned_coords(templateMol, effectiveDetails);
+
+  bj::object out;
+
+  out["molblock"] =
+      MinimalLib::molblock_helper(get(), "{}", MinimalLib::MDLVersion::AUTO);
+
+  bj::array atoms;
+  std::set<int> matchedSet;
+  if (!matchJson.empty()) {
+    try {
+      auto match = bj::parse(matchJson);
+      if (match.is_object() && match.as_object().contains("atoms") &&
+          match.as_object().at("atoms").is_array()) {
+        for (const auto &a : match.as_object().at("atoms").as_array()) {
+          int idx = static_cast<int>(a.to_number<int64_t>());
+          atoms.push_back(idx);
+          matchedSet.insert(idx);
+        }
+      }
+    } catch (...) {
+    }
+  }
+  out["atoms"] = atoms;
+
+  // Kept skeleton = the MCS atoms of this molecule (same as `atoms` above). The
+  // client draws a coloured ribbon along the bonds joining these atoms to show
+  // the part conserved through the reaction.
+  bj::array mcsAtoms;
+  for (int idx : matchedSet) {
+    mcsAtoms.push_back(idx);
+  }
+  out["mcsAtoms"] = mcsAtoms;
+
+  // Disconnection (cut) atoms = MCS atoms whose image on the template (product)
+  // is bonded to an out-of-MCS atom (the leaving group). Returned in BOTH index
+  // spaces so the same physical atom can be marked on the reactant and on the
+  // product with one colour: cutAtoms (this molecule's indices) and
+  // cutAtomsTemplate (the template/product indices).
+  bj::array cutAtoms;
+  bj::array cutAtomsTemplate;
+  // Whole kept skeleton in the TEMPLATE (product) indices, so an animation can
+  // run along the same conserved sub-structure on both the reactant and product.
+  bj::array mcsAtomsTemplate;
+#ifdef RDK_BUILD_MINIMAL_LIB_MCS
+  if (!mcsSmarts.empty()) {
+    std::unique_ptr<RWMol> mcsMol(SmartsToMol(mcsSmarts));
+    if (mcsMol) {
+      const auto &thisMol = get();
+      const auto &tmplMol = templateMol.get();
+      MatchVectType reactantMatch, productMatch;
+      if (SubstructMatch(thisMol, *mcsMol, reactantMatch) &&
+          SubstructMatch(tmplMol, *mcsMol, productMatch) &&
+          reactantMatch.size() == productMatch.size()) {
+        std::set<int> productMcsSet;
+        for (const auto &pr : productMatch) {
+          productMcsSet.insert(pr.second);
+          mcsAtomsTemplate.push_back(pr.second);
+        }
+        for (size_t k = 0; k < productMatch.size(); ++k) {
+          int prodIdx = productMatch[k].second;
+          const auto *prodAtom =
+              tmplMol.getAtomWithIdx(static_cast<unsigned int>(prodIdx));
+          bool isCut = false;
+          for (const auto &nbri :
+               boost::make_iterator_range(tmplMol.getAtomNeighbors(prodAtom))) {
+            if (!productMcsSet.count(static_cast<int>(tmplMol[nbri]->getIdx()))) {
+              isCut = true;
+              break;
+            }
+          }
+          if (isCut) {
+            cutAtoms.push_back(reactantMatch[k].second);
+            cutAtomsTemplate.push_back(prodIdx);
+          }
+        }
+      }
+    }
+  }
+#endif
+  out["cutAtoms"] = cutAtoms;
+  out["cutAtomsTemplate"] = cutAtomsTemplate;
+  out["mcsAtomsTemplate"] = mcsAtomsTemplate;
+
+  return bj::serialize(out);
 }
 
 int JSMolBase::has_coords() const {

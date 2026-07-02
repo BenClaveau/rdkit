@@ -1,0 +1,59 @@
+# Build the Spaya RDKit MinimalLib WASM and publish it to the GitLab npm Package
+# Registry as @spaya/rdkit. Runs on git tags (e.g. v2024.3.1).
+#
+# Publish uses the project npm endpoint + CI_JOB_TOKEN. (Consumers install via the
+# instance-wide endpoint, which requires the @spaya scope to match the root group.)
+#
+# Base images come from AWS Public ECR (Docker Hub mirror, no rate limits): we
+# assume an AWS role via GitLab OIDC and log in to Public ECR (login region is
+# always us-east-1) before building. ROLE_ARN is a CI/CD variable.
+
+stages:
+  - publish
+
+# dind runner selector: the `docker-in-docker` tag is required for the job to be
+# scheduled on a privileged runner (shared .docker-in-docker template convention).
+.docker-in-docker:
+  tags:
+    - docker-in-docker
+  image: public.ecr.aws/docker/library/docker:27
+  services:
+    - name: public.ecr.aws/docker/library/docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_BUILDKIT: "1"
+
+publish-wasm:
+  stage: publish
+  extends: .docker-in-docker
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.dc.corp.iktos.ai
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  before_script:
+    - apk add --no-cache nodejs npm aws-cli
+    # Assume the AWS role via GitLab OIDC, then log in to Public ECR so base-image
+    # pulls are authenticated (higher rate limit). Login region is always us-east-1.
+    - |
+      export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s" \
+        $(aws sts assume-role-with-web-identity \
+          --role-arn "${ROLE_ARN}" \
+          --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}" \
+          --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+          --duration-seconds 3600 \
+          --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+          --output text))
+    - aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+  script:
+    # Build the WASM straight into the npm package dir. `--target export-stage`
+    # (a scratch stage) drops exactly RDKit_minimal.{js,wasm} at the output root.
+    - docker build -f Code/MinimalLib/docker/Dockerfile_local --target export-stage -o Code/MinimalLib/npm .
+    - cd Code/MinimalLib/npm
+    - npm version --no-git-tag-version --allow-same-version "${CI_COMMIT_TAG#v}"
+    - |
+      cat > .npmrc <<EOF
+      @spaya:registry=https://gitlab.dc.corp.iktos.ai/api/v4/projects/${CI_PROJECT_ID}/packages/npm/
+      //gitlab.dc.corp.iktos.ai/api/v4/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}
+      EOF
+    - npm publish

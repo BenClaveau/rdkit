@@ -1,0 +1,28 @@
+{
+  "name": "@spaya/rdkit",
+  "version": "2024.3.1",
+  "description": "Spaya RDKit MinimalLib WASM build (get_2d_geometry, alignment; InChI/URF/RXN/SubstructLib disabled)",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "RDKit_minimal.js",
+    "RDKit_minimal.wasm"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./RDKit_minimal.js": "./RDKit_minimal.js",
+    "./RDKit_minimal.wasm": "./RDKit_minimal.wasm"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.dc.corp.iktos.ai/spaya/rdkit.git"
+  },
+  "license": "BSD-3-Clause"
+}

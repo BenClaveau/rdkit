@@ -271,6 +271,16 @@ emscripten::val get_morgan_fp_as_uint8array(const JSMolBase &self) {
   return get_morgan_fp_as_uint8array(self, "{}");
 }
 
+std::string get_aligned_molblock_helper(JSMolBase &self,
+                                        const JSMolBase &templateMol,
+                                        const emscripten::val &param) {
+  if (param.typeOf().as<std::string>() != "string") {
+    throw std::runtime_error(
+        "get_aligned_molblock expects a JSON string parameter");
+  }
+  return self.get_aligned_molblock(templateMol, param.as<std::string>());
+}
+
 std::string parse_pattern_fp_param(const emscripten::val &param,
                                    const std::string &funcName) {
   std::string details;
@@ -588,6 +598,11 @@ EMSCRIPTEN_BINDINGS(RDKit_minimal) {
           "combine_with",
           select_overload<std::string(const JSMolBase &, const std::string &)>(
               &JSMolBase::combine_with))
+      .function("get_2d_geometry", select_overload<std::string(
+                                       const std::string &) const>(
+                                       &JSMolBase::get_2d_geometry))
+      .function("get_2d_geometry",
+                select_overload<std::string() const>(&JSMolBase::get_2d_geometry))
 #ifdef __EMSCRIPTEN__
       .function("draw_to_canvas_with_offset", &draw_to_canvas_with_offset)
       .function("draw_to_canvas", &draw_to_canvas)
@@ -597,6 +612,10 @@ EMSCRIPTEN_BINDINGS(RDKit_minimal) {
                 select_overload<std::string(JSMolBase &, const JSMolBase &,
                                             const val &)>(
                     generate_aligned_coords_helper))
+      .function("get_aligned_molblock",
+                select_overload<std::string(JSMolBase &, const JSMolBase &,
+                                            const emscripten::val &)>(
+                    get_aligned_molblock_helper))
       .function(
           "get_morgan_fp_as_uint8array",
           select_overload<val(const JSMolBase &)>(get_morgan_fp_as_uint8array))

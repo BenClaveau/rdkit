@@ -1,0 +1,107 @@
+# Builds RDKit MinimalLib (JS + WASM) from the LOCAL source tree instead of
+# cloning from git. Use this to build the Spaya fork with local changes
+# (e.g. the get_2d_geometry function) without pushing first.
+#
+# Build context MUST be the repository root (the rdkit/ folder), e.g.:
+#   cd rdkit
+#   DOCKER_BUILDKIT=1 docker build -f Code/MinimalLib/docker/Dockerfile_local \
+#     -o Code/MinimalLib/dist .
+
+# 'latest' is the only emsdk release with prebuilt arm64 binaries (older pinned
+# versions 404 on arm64). The stricter raw-pointer checks it adds are handled by
+# fixing the affected bindings in jswrapper.cpp directly.
+ARG EMSDK_VERSION="latest"
+ARG BOOST_MAJOR_VERSION="1"
+ARG BOOST_MINOR_VERSION="84"
+ARG BOOST_PATCH_VERSION="0"
+
+# Bookworm (Debian 12) ships Python 3.11 (emsdk 'latest' needs >=3.9) and a
+# recent cmake, with live apt repos. The original Buster image is EOL.
+# Base images pulled from AWS Public ECR (Docker Hub's official mirror) to avoid
+# Docker Hub pull-rate limits. Anonymous pulls, no auth needed.
+FROM public.ecr.aws/docker/library/debian:bookworm AS build-stage
+ARG EMSDK_VERSION
+ARG BOOST_MAJOR_VERSION
+ARG BOOST_MINOR_VERSION
+ARG BOOST_PATCH_VERSION
+
+RUN apt-get update && apt install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  wget \
+  xz-utils \
+  cmake \
+  make \
+  python3 \
+  g++ \
+  libeigen3-dev \
+  git \
+  nodejs
+
+ENV LANG C
+
+WORKDIR /opt
+ARG BOOST_DOT_VERSION="${BOOST_MAJOR_VERSION}.${BOOST_MINOR_VERSION}.${BOOST_PATCH_VERSION}"
+ARG BOOST_UNDERSCORE_VERSION="${BOOST_MAJOR_VERSION}_${BOOST_MINOR_VERSION}_${BOOST_PATCH_VERSION}"
+# boostorg.jfrog.io was retired; fetch from the official archives mirror.
+RUN wget -q https://archives.boost.io/release/${BOOST_DOT_VERSION}/source/boost_${BOOST_UNDERSCORE_VERSION}.tar.gz && \
+  tar xzf boost_${BOOST_UNDERSCORE_VERSION}.tar.gz
+WORKDIR /opt/boost_${BOOST_UNDERSCORE_VERSION}
+RUN ./bootstrap.sh --prefix=/opt/boost --with-libraries=system && \
+  ./b2 install
+
+WORKDIR /opt
+RUN git clone https://github.com/emscripten-core/emsdk.git
+WORKDIR /opt/emsdk
+RUN ./emsdk install ${EMSDK_VERSION} && \
+  ./emsdk activate ${EMSDK_VERSION}
+
+# Copy the LOCAL source tree (build context = repo root) instead of git clone.
+ENV RDBASE=/src/rdkit
+RUN mkdir -p /src
+COPY . ${RDBASE}
+
+RUN mkdir -p ${RDBASE}/build
+WORKDIR ${RDBASE}/build
+
+RUN echo "source /opt/emsdk/emsdk_env.sh > /dev/null 2>&1" >> ~/.bashrc
+SHELL ["/bin/bash", "-c", "-l"]
+# FreeType is disabled: it only affects RDKit's own SVG text rendering (which we
+# no longer use — get_2d_geometry returns coordinates and React draws the labels).
+# It also avoids the broken Comic Neue font download (Google Fonts md5 drift).
+RUN emcmake cmake -DBoost_INCLUDE_DIR=/opt/boost/include -DCMAKE_PREFIX_PATH=/opt/boost -DCMAKE_FIND_ROOT_PATH=/opt/boost -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH -DRDK_BUILD_FREETYPE_SUPPORT=OFF -DRDK_BUILD_MINIMAL_LIB=ON \
+  -DRDK_BUILD_MINIMAL_LIB_MCS=ON \
+  -DRDK_BUILD_PYTHON_WRAPPERS=OFF -DRDK_BUILD_CPP_TESTS=OFF -DRDK_BUILD_INCHI_SUPPORT=OFF \
+  -DRDK_USE_BOOST_SERIALIZATION=OFF -DRDK_OPTIMIZE_POPCNT=OFF -DRDK_BUILD_THREADSAFE_SSS=OFF \
+  -DRDK_BUILD_DESCRIPTORS3D=OFF -DRDK_TEST_MULTITHREADED=OFF \
+  -DRDK_BUILD_MAEPARSER_SUPPORT=OFF -DRDK_BUILD_COORDGEN_SUPPORT=ON \
+  -DRDK_BUILD_SLN_SUPPORT=OFF -DRDK_USE_BOOST_IOSTREAMS=OFF \
+  -DRDK_USE_URF=OFF -DRDK_BUILD_MINIMAL_LIB_RXN=OFF -DRDK_BUILD_MINIMAL_LIB_SUBSTRUCTLIBRARY=OFF \
+  -DRDK_BUILD_CHEMDRAW_SUPPORT=OFF \
+  -DCMAKE_CXX_FLAGS="-Wno-enum-constexpr-conversion -s DISABLE_EXCEPTION_CATCHING=0 -sUSE_ZLIB=1" \
+  -DCMAKE_C_FLAGS="-Wno-enum-constexpr-conversion -DCOMPILE_ANSI_ONLY -sUSE_ZLIB=1" \
+  -DCMAKE_EXE_LINKER_FLAGS="-s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web -s ALLOW_MEMORY_GROWTH=1 -sUSE_ZLIB=1 -s EXPORT_NAME=\"'initRDKitModule'\"" ..
+
+# InChI is disabled (RDK_BUILD_INCHI_SUPPORT=OFF) — Spaya never calls get_inchi /
+# get_inchikey_for_inchi. Dropping it shrinks the wasm and removes the InChI
+# emscripten patch that was needed here.
+
+RUN make -j2 RDKit_minimal && \
+  cp Code/MinimalLib/RDKit_minimal.* ../Code/MinimalLib/demo/
+
+# Export only the built artifacts (produced in the build dir). Used with
+# `docker build -o <dir>` to drop the files on the host.
+FROM scratch AS export-stage
+COPY --from=build-stage /src/rdkit/build/Code/MinimalLib/RDKit_minimal.js /
+COPY --from=build-stage /src/rdkit/build/Code/MinimalLib/RDKit_minimal.wasm /
+
+# Publishable image: a tiny image carrying the built WASM artifacts under /dist.
+# Consumers (or publish.sh) can `docker create` + `docker cp` them out, or a CI
+# step can pull this image to fetch the artifacts. Kept minimal (busybox) — the
+# heavy build-stage is not shipped.
+FROM public.ecr.aws/docker/library/busybox:1.36 AS image
+COPY --from=build-stage /src/rdkit/build/Code/MinimalLib/RDKit_minimal.js /dist/RDKit_minimal.js
+COPY --from=build-stage /src/rdkit/build/Code/MinimalLib/RDKit_minimal.wasm /dist/RDKit_minimal.wasm
+# Fail the build early if the artifact isn't a real WASM module (magic "\0asm").
+RUN head -c 4 /dist/RDKit_minimal.wasm | grep -q "$(printf '\0asm')" || (echo "ERROR: RDKit_minimal.wasm is not a valid WASM module" && exit 1)
+LABEL org.opencontainers.image.description="Spaya RDKit MinimalLib — WASM build (get_2d_geometry, alignment; InChI/URF/RXN/SubstructLib disabled)"

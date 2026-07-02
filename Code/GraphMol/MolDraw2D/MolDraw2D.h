@@ -328,6 +328,17 @@ class RDKIT_MOLDRAW2D_EXPORT MolDraw2D {
   const std::vector<std::pair<std::string, MolDraw2D_detail::OrientType>> &
   atomSyms() const;
 
+  //! returns the DrawMol holding the computed draw primitives (lines, wedges,
+  //! positioned atom-label characters) for the active molecule, or nullptr.
+  //! Valid after the molecule has been drawn.
+  const MolDraw2D_detail::DrawMol *getActiveDrawMol() const {
+    if (activeMolIdx_ < 0 ||
+        static_cast<size_t>(activeMolIdx_) >= drawMols_.size()) {
+      return nullptr;
+    }
+    return drawMols_[activeMolIdx_].get();
+  }
+
   //! return the width of the drawing area.
   int width() const { return width_; }
   //! return the height of the drawing area.

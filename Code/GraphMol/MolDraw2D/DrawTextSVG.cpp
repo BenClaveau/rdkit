@@ -122,8 +122,13 @@ void DrawTextSVG::getStringRects(
     // empirical spacing.
     if (draw_modes[i] != TextDrawType::TextDrawNormal) {
       running_x += char_width * 1.05;
+    } else if (i + 1 < draw_chars.size() &&
+               draw_modes[i + 1] != TextDrawType::TextDrawNormal) {
+      // A sub/superscript follows: tuck it against this letter instead of
+      // leaving a full character-width gap (e.g. the "2" in NH2).
+      running_x += char_width * 0.55;
     } else {
-      running_x += char_width * 1.15;
+      running_x += char_width * 1.0;
     }
   }
   for (auto r : rects) {

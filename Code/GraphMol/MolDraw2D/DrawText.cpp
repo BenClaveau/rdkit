@@ -541,9 +541,9 @@ void DrawText::getStringRects(const std::string &text, OrientType orient,
       draw_chars.insert(draw_chars.end(), t_draw_chars.begin(),
                         t_draw_chars.end());
       if (orient == OrientType::N) {
-        running_y -= 1.1 * max_height;
+        running_y -= 0.85 * max_height;
       } else if (orient == OrientType::S) {
-        running_y += 1.1 * max_height;
+        running_y += 0.85 * max_height;
       }
     }
   }

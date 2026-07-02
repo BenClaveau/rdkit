@@ -57,6 +57,7 @@ class JSMolBase {
     return get_svg(d_defaultWidth, d_defaultHeight);
   }
   std::string get_svg_with_highlights(const std::string &details) const;
+
   std::string get_substruct_match(const JSMolBase &q,
                                   const std::string &details) const;
   std::string get_substruct_match(const JSMolBase &q) const {
@@ -67,6 +68,8 @@ class JSMolBase {
   std::string get_substruct_matches(const JSMolBase &q) const {
     return get_substruct_matches(q, "");
   };
+  std::string get_2d_geometry(const std::string &details) const;
+  std::string get_2d_geometry() const { return get_2d_geometry("{}"); }
   std::string get_descriptors() const;
   std::string get_morgan_fp(const std::string &details) const;
   std::string get_morgan_fp() const { return get_morgan_fp("{}"); }
@@ -122,6 +125,13 @@ class JSMolBase {
                                       const std::string &details);
   std::string generate_aligned_coords(const JSMolBase &templateMol) {
     return generate_aligned_coords(templateMol, "{}");
+  }
+  // Orient this molecule onto templateMol and return a JSON string
+  // {"molblock": <aligned molblock>, "atoms": [matched atom ids]} in one call.
+  std::string get_aligned_molblock(const JSMolBase &templateMol,
+                                   const std::string &details);
+  std::string get_aligned_molblock(const JSMolBase &templateMol) {
+    return get_aligned_molblock(templateMol, "{}");
   }
   [[deprecated(
       "please check the get_mol/get_qmol return value for non-nullness "

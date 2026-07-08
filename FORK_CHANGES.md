@@ -15,6 +15,16 @@ Summary of changes:
    tree and emits the WASM artifacts (see below).
 4. **npm package** — the compiled WASM is published to the GitLab npm registry as
    `@spaya/rdkit`, so a frontend just `npm install`s it (no build client-side).
+5. **Safari fix** — the link flags force `-s GROWABLE_ARRAYBUFFERS=0`. Recent
+   Emscripten defaults this to `1` under `ALLOW_MEMORY_GROWTH`, which backs the
+   heap with a resizable ArrayBuffer. WebKit's `TextDecoder.decode()` throws
+   `TypeError: Resizable ArrayBuffer is not allowed` on a view over such a
+   buffer, so every string returned from wasm (`get_2d_geometry`, `get_molblock`,
+   …) fails and no molecule renders in Safari. Forcing `0` keeps the plain
+   (still growable) buffer and is version-independent. Until a wasm rebuilt with
+   this flag is published and installed, the frontend keeps a runtime shim
+   (`delete WebAssembly.Memory.prototype.toResizableBuffer` in `rdkit-worker.ts`);
+   that shim can be removed once the new `@spaya/rdkit` is in use.
 
 ## What the fork adds
 

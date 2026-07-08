@@ -80,7 +80,7 @@ RUN emcmake cmake -DBoost_INCLUDE_DIR=/opt/boost/include -DCMAKE_PREFIX_PATH=/op
   -DRDK_BUILD_CHEMDRAW_SUPPORT=OFF \
   -DCMAKE_CXX_FLAGS="-Wno-enum-constexpr-conversion -s DISABLE_EXCEPTION_CATCHING=0 -sUSE_ZLIB=1" \
   -DCMAKE_C_FLAGS="-Wno-enum-constexpr-conversion -DCOMPILE_ANSI_ONLY -sUSE_ZLIB=1" \
-  -DCMAKE_EXE_LINKER_FLAGS="-s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web -s ALLOW_MEMORY_GROWTH=1 -sUSE_ZLIB=1 -s EXPORT_NAME=\"'initRDKitModule'\"" ..
+  -DCMAKE_EXE_LINKER_FLAGS="-s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web -s ALLOW_MEMORY_GROWTH=1 -s GROWABLE_ARRAYBUFFERS=0 -sUSE_ZLIB=1 -s EXPORT_NAME=\"'initRDKitModule'\"" ..
 
 # InChI is disabled (RDK_BUILD_INCHI_SUPPORT=OFF) — Spaya never calls get_inchi /
 # get_inchikey_for_inchi. Dropping it shrinks the wasm and removes the InChI

@@ -603,6 +603,11 @@ EMSCRIPTEN_BINDINGS(RDKit_minimal) {
                                        &JSMolBase::get_2d_geometry))
       .function("get_2d_geometry",
                 select_overload<std::string() const>(&JSMolBase::get_2d_geometry))
+      .function("get_3d_geometry", select_overload<std::string(
+                                       const std::string &) const>(
+                                       &JSMolBase::get_3d_geometry))
+      .function("get_3d_geometry",
+                select_overload<std::string() const>(&JSMolBase::get_3d_geometry))
 #ifdef __EMSCRIPTEN__
       .function("draw_to_canvas_with_offset", &draw_to_canvas_with_offset)
       .function("draw_to_canvas", &draw_to_canvas)

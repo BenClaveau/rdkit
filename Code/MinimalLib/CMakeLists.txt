@@ -3,6 +3,7 @@ include_directories(${RDKit_ExternalDir})
 if(RDK_BUILD_MINIMAL_LIB)
     set(MINIMAL_LIB_LIBRARIES "MolInterchange;Abbreviations;"
         "CIPLabeler;MolDraw2D;Depictor;"
+        "DistGeomHelpers;DistGeometry;ForceFieldHelpers;ForceField;"
         "Descriptors;SubstructMatch;FileParsers;"
         "SmilesParse;GraphMol;RDGeometryLib;"
         "RDGeneral;RGroupDecomposition;Fingerprints")

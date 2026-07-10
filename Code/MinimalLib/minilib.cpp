@@ -145,6 +145,12 @@ std::string JSMolBase::get_2d_geometry(const std::string &details) const {
   int h = d_defaultHeight;
   return MinimalLib::mol_to_geometry(molCopy, w, h, details);
 }
+std::string JSMolBase::get_3d_geometry(const std::string &details) const {
+  // mol_to_3d_geometry may embed a conformer and add Hs in place, so it works
+  // on a copy to keep this method const and leave the molecule untouched.
+  RWMol molCopy(get());
+  return MinimalLib::mol_to_3d_geometry(molCopy, details);
+}
 
 #ifdef RDK_BUILD_INCHI_SUPPORT
 std::string JSMolBase::get_inchi(const std::string &options) const {

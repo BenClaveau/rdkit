@@ -70,6 +70,8 @@ class JSMolBase {
   };
   std::string get_2d_geometry(const std::string &details) const;
   std::string get_2d_geometry() const { return get_2d_geometry("{}"); }
+  std::string get_3d_geometry(const std::string &details) const;
+  std::string get_3d_geometry() const { return get_3d_geometry("{}"); }
   std::string get_descriptors() const;
   std::string get_morgan_fp(const std::string &details) const;
   std::string get_morgan_fp() const { return get_morgan_fp("{}"); }

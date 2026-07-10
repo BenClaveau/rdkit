@@ -32,6 +32,35 @@ export interface RDKitGeometry {
   view: { width: number; height: number };
 }
 
+/** Result of JSMol.get_3d_geometry() (parsed from its JSON string). */
+export interface RDKitGeometry3D {
+  atoms: Array<{
+    idx: number;
+    x: number;
+    y: number;
+    z: number;
+    symbol: string;
+    atomicNum: number;
+    charge: number;
+    numHs: number;
+    isAromatic: boolean;
+    chiralTag: number;
+    cipCode?: string;
+  }>;
+  bonds: Array<{
+    idx: number;
+    begin: number;
+    end: number;
+    /** RDKit Bond::BondType — SINGLE=1, DOUBLE=2, TRIPLE=3, AROMATIC=12. */
+    bondType: number;
+    isAromatic: boolean;
+    isConjugated: boolean;
+    /** RDKit Bond::BondDir — NONE=0, BEGINWEDGE=1, BEGINDASH=2. */
+    bondDir: number;
+    stereo: number;
+  }>;
+}
+
 export interface JSMol {
   is_valid(): boolean;
   get_smiles(): string;
@@ -46,6 +75,16 @@ export interface JSMol {
    * `alignMolBlock` (a MolBlock to orient the molecule against a reference).
    */
   get_2d_geometry(details?: string): string;
+  /**
+   * Fork addition — atom/bond data with 3D coordinates as a JSON string
+   * (parse into {@link RDKitGeometry3D}). A 3D conformer is embedded (ETKDGv3)
+   * when the molecule has none; a molecule parsed from a 3D molblock keeps its
+   * coordinates. `details` accepts `addHs` (add + position hydrogens before
+   * embedding) and any `EmbedMolecule` parameter (e.g. `randomSeed`,
+   * `maxIterations`). Returns `{"error":"3D embedding failed"}` if embedding
+   * fails.
+   */
+  get_3d_geometry(details?: string): string;
   /** Compute a 2D layout from scratch (CoordGen if preferred). Returns true on success. */
   set_new_coords(useCoordGen?: boolean): boolean;
   /**

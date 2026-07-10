@@ -8,7 +8,9 @@ Summary of changes:
 1. **New API** — `JSMol::get_2d_geometry()` returns atom/bond positions and styles
    (after layout and optional alignment) as JSON, so a consumer can draw the molecule
    itself (SVG, canvas…) with full interactivity, instead of relying on RDKit's own
-   SVG text rendering.
+   SVG text rendering. `JSMol::get_3d_geometry()` is the 3D counterpart: it returns
+   enriched atom/bond data with 3D coordinates (embedding an ETKDGv3 conformer when
+   the molecule has none), so a consumer can render the molecule in 3D (e.g. WebGL).
 2. **Trimmed MinimalLib build** — InChI, URF, reactions and SubstructLibrary are
    disabled to keep the WASM small (2D drawing only).
 3. **Buildable/publishable Dockerfile** — `Dockerfile_local` builds from the local
@@ -29,8 +31,11 @@ Summary of changes:
 ## What the fork adds
 
 - `JSMol::get_2d_geometry(details)` — `Code/MinimalLib/minilib.h` / `minilib.cpp`
-- `mol_to_geometry(...)` helper — `Code/MinimalLib/common.h`
+- `JSMol::get_3d_geometry(details)` — `Code/MinimalLib/minilib.h` / `minilib.cpp`
+- `mol_to_geometry(...)` / `mol_to_3d_geometry(...)` helpers — `Code/MinimalLib/common.h`
 - Emscripten binding — `Code/MinimalLib/jswrapper.cpp`
+- 3D embedding libraries (`DistGeomHelpers`, `DistGeometry`, `ForceFieldHelpers`,
+  `ForceField`) added to the MinimalLib link set — `Code/MinimalLib/CMakeLists.txt`
 
 `details` is a JSON string accepting `width`, `height`, `fixedBondLength`, and an optional
 `alignMolBlock` (a MolBlock to orient the molecule like the matching sub-part of a reference,
@@ -50,7 +55,24 @@ partial match accepted). It returns:
 `bondType` follows RDKit `Bond::BondType` (SINGLE=1, DOUBLE=2, TRIPLE=3, AROMATIC=12).
 `bondDir` follows `Bond::BondDir` (NONE=0, BEGINWEDGE=1, BEGINDASH=2) for pseudo-3D wedges.
 
-A future `get_3d_geometry()` may be added alongside it for 3D coordinates.
+`get_3d_geometry(details)` is the 3D counterpart. It returns enriched atom/bond data
+with 3D coordinates (no `view` box — coordinates are in Ångström, in the conformer's
+own frame):
+
+```jsonc
+{
+  "atoms": [{ "idx", "x", "y", "z", "symbol", "atomicNum", "charge", "numHs",
+              "isAromatic", "chiralTag", "cipCode?" }],
+  "bonds": [{ "idx", "begin", "end", "bondType", "isAromatic",
+              "isConjugated", "bondDir", "stereo" }]
+}
+```
+
+A 3D conformer is embedded (ETKDGv3) when the molecule has none; a molecule parsed
+from a 3D molblock keeps its supplied coordinates. `details` accepts `addHs` (add and
+position hydrogens before embedding) and any `EmbedMolecule` parameter (e.g.
+`randomSeed`, `maxIterations`; see `updateEmbedParametersFromJSON`). On failure it
+returns `{"error":"3D embedding failed"}`.
 
 ## Build the WASM (`RDKit_minimal.js` + `RDKit_minimal.wasm`)
 

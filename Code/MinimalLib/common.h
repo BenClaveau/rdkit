@@ -44,6 +44,7 @@
 #endif
 #include <GraphMol/Depictor/RDDepictor.h>
 #include <GraphMol/Depictor/DepictUtils.h>
+#include <GraphMol/DistGeomHelpers/Embedder.h>
 #include <GraphMol/Conformer.h>
 #include <GraphMol/MolAlign/AlignMolecules.h>
 #include <GraphMol/Substruct/SubstructUtils.h>
@@ -1088,6 +1089,99 @@ std::string mol_to_geometry(ROMol &m, int w = -1, int h = -1,
   view["width"] = drawer.width();
   view["height"] = drawer.height();
   doc["view"] = view;
+
+  return bj::serialize(doc);
+}
+
+// Returns enriched atom/bond data with 3D coordinates as JSON, so a client
+// (e.g. a WebGL viewer) can render the molecule in 3D. Mirrors mol_to_geometry:
+// mol_to_geometry lays out 2D coords if missing, this embeds a 3D conformer
+// (ETKDGv3) if the molecule has no 3D conformer yet. The molecule is expected
+// to already carry explicit Hs if the caller wants them positioned.
+// Pass "addHs" in the details JSON to add (and position) hydrogens before
+// embedding; any EmbedMolecule parameter is also read from the details JSON
+// (see updateEmbedParametersFromJSON).
+std::string mol_to_3d_geometry(RWMol &m, const std::string &details = "") {
+  bool addHs = false;
+  if (!details.empty()) {
+    boost::property_tree::ptree pt;
+    std::istringstream ss;
+    ss.str(details);
+    boost::property_tree::read_json(ss, pt);
+    LPT_OPT_GET(addHs);
+  }
+
+  if (addHs) {
+    MolOps::addHs(m);
+  }
+
+  // Embed a fresh 3D conformer only when none is present, so a molecule parsed
+  // from a 3D molblock keeps its supplied coordinates (like mol_to_geometry
+  // keeps pre-existing 2D coords).
+  bool have3D = m.getNumConformers() && m.getConformer().is3D();
+  if (!have3D) {
+    DGeomHelpers::EmbedParameters ps = DGeomHelpers::srETKDGv3;
+    if (!details.empty()) {
+      DGeomHelpers::updateEmbedParametersFromJSON(ps, details);
+    }
+    int confId = DGeomHelpers::EmbedMolecule(m, ps);
+    if (ps.coordMap) {
+      delete ps.coordMap;
+    }
+    if (confId < 0) {
+      return R"({"error":"3D embedding failed"})";
+    }
+  }
+
+  // Stereo perception + CIP labels, so the client can annotate R/S like the
+  // stereo tags exposed elsewhere.
+  bool cleanIt = true;
+  bool force = true;
+  bool flagPossibleStereocenters = true;
+  MolOps::assignStereochemistry(m, cleanIt, force, flagPossibleStereocenters);
+  CIPLabeler::assignCIPLabels(m);
+
+  const auto &conf = m.getConformer();
+
+  bj::object doc;
+
+  bj::array atoms;
+  for (const auto atom : m.atoms()) {
+    const auto idx = atom->getIdx();
+    const auto &pos = conf.getAtomPos(idx);
+    bj::object a;
+    a["idx"] = idx;
+    a["x"] = pos.x;
+    a["y"] = pos.y;
+    a["z"] = pos.z;
+    a["symbol"] = atom->getSymbol();
+    a["atomicNum"] = atom->getAtomicNum();
+    a["charge"] = atom->getFormalCharge();
+    a["numHs"] = atom->getTotalNumHs();
+    a["isAromatic"] = atom->getIsAromatic();
+    a["chiralTag"] = static_cast<int>(atom->getChiralTag());
+    std::string cip;
+    if (atom->getPropIfPresent(common_properties::_CIPCode, cip)) {
+      a["cipCode"] = cip;
+    }
+    atoms.push_back(a);
+  }
+  doc["atoms"] = atoms;
+
+  bj::array bonds;
+  for (const auto bond : m.bonds()) {
+    bj::object b;
+    b["idx"] = bond->getIdx();
+    b["begin"] = bond->getBeginAtomIdx();
+    b["end"] = bond->getEndAtomIdx();
+    b["bondType"] = static_cast<int>(bond->getBondType());
+    b["isAromatic"] = bond->getIsAromatic();
+    b["isConjugated"] = bond->getIsConjugated();
+    b["bondDir"] = static_cast<int>(bond->getBondDir());
+    b["stereo"] = static_cast<int>(bond->getStereo());
+    bonds.push_back(b);
+  }
+  doc["bonds"] = bonds;
 
   return bj::serialize(doc);
 }

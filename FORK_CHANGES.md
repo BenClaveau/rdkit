@@ -37,6 +37,20 @@ Summary of changes:
 - 3D embedding libraries (`DistGeomHelpers`, `DistGeometry`, `ForceFieldHelpers`,
   `ForceField`) added to the MinimalLib link set — `Code/MinimalLib/CMakeLists.txt`
 
+## Bug fixes vs upstream
+
+- **Aligned double bond drawn as an "X"** — `JSMolBase::get_aligned_molblock`,
+  `Code/MinimalLib/minilib.cpp`. `get_aligned_molblock` returns the molecule as a
+  molblock so a reactant can be redrawn oriented like the product. The molblock
+  writer marks a potentially-stereogenic but UNSPECIFIED double bond (e.g. the C=N of
+  an imine, `CC=NC`) as "crossed" (V2000 bond-stereo field = 3, cis-or-trans
+  unknown); on redraw RDKit honours it and draws the double bond as an X instead of
+  two parallel lines. The direct (non-aligned) render never round-trips through a
+  molblock, so only aligned frames showed the X — inconsistent and unwanted in the
+  schematic synthesis film. Fix: `clearDoubleBondStereoFlags` zeros the stereo field
+  of every V2000 DOUBLE-bond line in the returned molblock (display-only flag here;
+  single/wedge bonds untouched, no real stereochemistry lost).
+
 `details` is a JSON string accepting `width`, `height`, `fixedBondLength`, and an optional
 `alignMolBlock` (a MolBlock to orient the molecule like the matching sub-part of a reference,
 partial match accepted). It returns:

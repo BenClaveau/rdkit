@@ -10,6 +10,8 @@
 //
 #include <string>
 #include <set>
+#include <sstream>
+#include <vector>
 #include "minilib.h"
 #include "common.h"
 
@@ -530,6 +532,66 @@ std::string JSMolBase::generate_aligned_coords(const JSMolBase &templateMol,
                                              details.c_str());
 }
 
+namespace {
+// The aligned molblock is only used to lay out/redraw a reactant oriented like the
+// product (see get_aligned_molblock). When a molecule carries a potentially
+// stereogenic but UNSPECIFIED double bond (e.g. the C=N of an imine, CC=NC), the
+// molblock writer marks it "crossed" (V2000 bond-stereo field = 3, i.e. cis-or-trans
+// unknown). On redraw RDKit honours that flag and draws the double bond as an X
+// instead of two parallel lines. That crossed depiction is chemically valid but
+// unwanted here — the direct (non-aligned) render never emits it, so aligned frames
+// looked inconsistent. Neutralise it by zeroing the stereo field of every V2000
+// DOUBLE-bond line in the generated molblock (purely a display flag here; no real
+// stereochemistry is lost, and single/wedge bonds are untouched).
+std::string clearDoubleBondStereoFlags(const std::string &molblock) {
+  std::istringstream in(molblock);
+  std::string line;
+  std::vector<std::string> lines;
+  while (std::getline(in, line)) {
+    lines.push_back(line);
+  }
+  // V2000 counts line is line index 3: atoms in cols [0,3), bonds in cols [3,6).
+  if (lines.size() < 4 || lines[3].size() < 6) {
+    return molblock;
+  }
+  int nAtoms = 0;
+  int nBonds = 0;
+  try {
+    nAtoms = std::stoi(lines[3].substr(0, 3));
+    nBonds = std::stoi(lines[3].substr(3, 3));
+  } catch (...) {
+    return molblock;
+  }
+  const size_t firstBond = 4 + static_cast<size_t>(nAtoms);
+  const size_t lastBond = firstBond + static_cast<size_t>(nBonds);
+  if (lastBond > lines.size()) {
+    return molblock;
+  }
+  for (size_t i = firstBond; i < lastBond; ++i) {
+    std::string &bl = lines[i];
+    // Bond line: atom1 [0,3), atom2 [3,6), type [6,9), stereo [9,12).
+    if (bl.size() < 12) {
+      continue;
+    }
+    int type = 0;
+    try {
+      type = std::stoi(bl.substr(6, 3));
+    } catch (...) {
+      continue;
+    }
+    if (type == 2) {
+      bl.replace(9, 3, "  0");  // stereo = 0 (not crossed)
+    }
+  }
+  std::string out;
+  for (const auto &l : lines) {
+    out += l;
+    out += '\n';
+  }
+  return out;
+}
+}  // namespace
+
 std::string JSMolBase::get_aligned_molblock(const JSMolBase &templateMol,
                                             const std::string &details) {
   // Orienting this molecule (e.g. a reactant) onto the template (e.g. the
@@ -582,8 +644,8 @@ std::string JSMolBase::get_aligned_molblock(const JSMolBase &templateMol,
 
   bj::object out;
 
-  out["molblock"] =
-      MinimalLib::molblock_helper(get(), "{}", MinimalLib::MDLVersion::AUTO);
+  out["molblock"] = clearDoubleBondStereoFlags(
+      MinimalLib::molblock_helper(get(), "{}", MinimalLib::MDLVersion::AUTO));
 
   bj::array atoms;
   std::set<int> matchedSet;

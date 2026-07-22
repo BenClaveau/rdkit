@@ -877,6 +877,24 @@ std::string mol_to_geometry(ROMol &m, int w = -1, int h = -1,
     }
   }
 
+  // A double bond that is potentially stereogenic but UNSPECIFIED (e.g. the C=N of
+  // an imine, CC=NC) is stored/round-tripped as "crossed" (STEREOANY / EITHERDOUBLE,
+  // V2000 stereo field 3) and RDKit then draws it as an X. That is chemically valid
+  // but unwanted in our schematic depictions (and inconsistent: it only appears once
+  // a molblock has been round-tripped). Clear the crossed flag on every double bond
+  // so it is always drawn as two parallel lines — no real stereochemistry is lost
+  // here (the geometry is only used for display).
+  for (auto bond : m.bonds()) {
+    if (bond->getBondType() == Bond::DOUBLE) {
+      if (bond->getStereo() == Bond::STEREOANY) {
+        bond->setStereo(Bond::STEREONONE);
+      }
+      if (bond->getBondDir() == Bond::EITHERDOUBLE) {
+        bond->setBondDir(Bond::NONE);
+      }
+    }
+  }
+
   MolDraw2DSVG drawer(molDrawingDetails.width, molDrawingDetails.height,
                       molDrawingDetails.panelWidth,
                       molDrawingDetails.panelHeight,

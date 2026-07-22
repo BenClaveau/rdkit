@@ -96,10 +96,10 @@ export interface JSMol {
   /**
    * Orient onto `template` and return a JSON string
    * `{ "molblock": string, "atoms": number[], "mcsAtoms": number[] }` in one call
-   * (mcsAtoms = the kept skeleton shared with the template). Absent on older wasm;
-   * callers should fall back to generate_aligned_coords.
+   * (mcsAtoms = the kept skeleton shared with the template). Alignment and its
+   * display fixes (e.g. non-crossed double bonds) are handled entirely here.
    */
-  get_aligned_molblock?(template: JSMol, details: string): string;
+  get_aligned_molblock(template: JSMol, details: string): string;
   delete(): void;
 }
 
